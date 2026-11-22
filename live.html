@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>AIチャット×アーティファクト 30秒</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+@font-face{font-family:JP;src:url(fonts/noto-sans-jp-japanese-900-normal.woff2);font-weight:900}
+@font-face{font-family:JP;src:url(fonts/noto-sans-jp-latin-900-normal.woff2);font-weight:900;unicode-range:U+0000-00FF,U+2000-206F}
+@font-face{font-family:JP;src:url(fonts/noto-sans-jp-japanese-700-normal.woff2);font-weight:700}
+@font-face{font-family:JP;src:url(fonts/noto-sans-jp-latin-700-normal.woff2);font-weight:700;unicode-range:U+0000-00FF,U+2000-206F}
+@font-face{font-family:JP;src:url(fonts/noto-sans-jp-japanese-400-normal.woff2);font-weight:400}
+@font-face{font-family:JP;src:url(fonts/noto-sans-jp-latin-400-normal.woff2);font-weight:400;unicode-range:U+0000-00FF,U+2000-206F}
+@font-face{font-family:KL;src:url(fonts/klee-one-japanese-600-normal.woff2);font-weight:600}
+@font-face{font-family:KL;src:url(fonts/klee-one-latin-600-normal.woff2);font-weight:600;unicode-range:U+0000-00FF,U+2000-206F}
+html,body{margin:0;background:#000;height:100%}
+body{display:grid;place-items:center}
+canvas{display:block;max-width:100vw;max-height:100vh;aspect-ratio:16/9}
+</style></head>
+<body><canvas id="c" width="1920" height="1080"></canvas>
+<script>
+/* 画面は t（秒）だけで決まる純関数。描画中に Math.random() は使わない（hash を使う）。 */
+const W=1920,H=1080,CX=W/2,CY=H/2;
+const DUR=30.0,BPM=120,BEAT=60/BPM;
+const C={navy:'#0B2A4A',blue:'#0A7CC4',white:'#FFFFFF',paper:'#F6FAFD',ink:'#12233A',acc:'#FFD23F',sub:'#BFE3F7',foot:'#5B7A99'};
+const FONTS=['900 40px JP','700 40px JP','400 40px JP','600 40px KL'];
+const LABELS=['カレー','なべ','パスタ','焼き魚','うどん','餃子','丼','サラダ'];
+const FONT_SAMPLE='正解決まった答えは、ありませんAIにお願いしたいこと目的いまの状況最初に頼むこと仮の答えで大丈夫チャットアーティファクト作りました頼んだものが、その場で形になる文字を大きくして色を変えて項目を増やしてもっとシンプルにためす直すゴールは、動いていい×答えがないから、見直しながら進めるサロン向け勉強会第回＋（再開催）①②③123'+LABELS.join('');
+
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const mk=()=>{const c=document.createElement('canvas');c.width=W;c.height=H;return c};
+const bufA=mk();
+
+/* ---------- math ---------- */
+const clamp=(x,a=0,b=1)=>Math.min(b,Math.max(a,x)),lerp=(a,b,t)=>a+(b-a)*t,prog=(t,a,b)=>clamp((t-a)/(b-a)),TAU=Math.PI*2;
+const E={
+ linear:t=>t,inQuad:t=>t*t,inCubic:t=>t*t*t,outCubic:t=>1-(1-t)**3,outQuart:t=>1-(1-t)**4,
+ outExpo:t=>t>=1?1:1-2**(-10*t),inExpo:t=>t<=0?0:2**(10*t-10),
+ inOutCubic:t=>t<.5?4*t*t*t:1-(-2*t+2)**3/2,
+ inOutExpo:t=>t<=0?0:t>=1?1:t<.5?2**(20*t-10)/2:(2-2**(-20*t+10))/2,
+ outBack:t=>{const c1=1.70158,c3=c1+1;return 1+c3*(t-1)**3+c1*(t-1)**2},
+ outElastic:t=>t<=0?0:t>=1?1:2**(-10*t)*Math.sin((t*10-.75)*TAU/3)+1,
+ outBounce:t=>{const n=7.5625,d=2.75;if(t<1/d)return n*t*t;if(t<2/d)return n*(t-=1.5/d)*t+.75;if(t<2.5/d)return n*(t-=2.25/d)*t+.9375;return n*(t-=2.625/d)*t+.984375},
+};
+const hash=n=>{const s=Math.sin(n*127.1+311.7)*43758.5453;return s-Math.floor(s)};
+const noise=x=>{const i=Math.floor(x),f=x-i,u=f*f*(3-2*f);return lerp(hash(i),hash(i+1),u)*2-1};
+const hex=h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16));
+const mix=(a,b,q)=>{const A=hex(a),B=hex(b);return`rgb(${A.map((v,i)=>Math.round(lerp(v,B[i],q))).join(',')})`};
+const lum=h=>{const[r,g,b]=hex(h);return(.299*r+.587*g+.114*b)/255};
+// 値の変化をつなぐ：keys=[[時刻,値],...]。各時刻から d 秒かけて次の値へ
+function tr(t,keys,d=.25,ease=E.outCubic){let v=keys[0][1];for(let i=1;i<keys.length;i++){const[tt,val]=keys[i];if(t<tt)break;v=lerp(v,val,ease(prog(t,tt,tt+d)))}return v}
+
+/* 強拍（画面の揺れ）。効果音スクリプトと同じ時刻 */
+const FIX=[17,18,19,20,20.5,21,21.25,21.5,21.75];          // 直す
+const TRY=[15,17.5,18.5,19.5,20.25,20.75,21.125,21.375,21.625]; // ためす
+const HITS=[[.5,.35],[1,.35],[1.5,.35],[2,.9],[4.75,.5],[10,.6],[13.25,.5],[16.5,.4],...FIX.map(x=>[x,.3]),[26.5,.7]];
+const impact=t=>{let v=0;for(const[h,a]of HITS){const d=t-h;if(d>=0&&d<.5)v=Math.max(v,a*Math.exp(-d*12))}return v};
+
+/* ---------- 文字 ---------- */
+function txt(c,s,x,y,o={}){
+ c.save();c.globalAlpha*=o.alpha??1;c.font=o.font;c.textAlign=o.align||'left';c.textBaseline='alphabetic';
+ const ls=o.ls||0;c.letterSpacing=ls+'px';if(o.align==='center')x+=ls/2;
+ c.fillStyle=o.fill||C.white;c.fillText(s,x,y);c.restore();
+}
+function midY(c,s){const m=c.measureText(s);return(m.actualBoundingBoxAscent-m.actualBoundingBoxDescent)/2}
+// 文字が見えない線からせり上がる（マスク表示）。align: 'center' | 'left' | 'right'
+function masked(c,word,x,base,font,t0,t,{stagger=.05,dur=.45,ls=2,col=C.white,ease=E.outExpo,align='center'}={}){
+ c.save();c.font=font;c.letterSpacing='0px';c.textAlign='left';
+ const ch=[...word],ws=ch.map(s=>c.measureText(s).width+ls),tot=ws.reduce((a,b)=>a+b,0)-ls;
+ const m=c.measureText(word),asc=m.actualBoundingBoxAscent,desc=m.actualBoundingBoxDescent;
+ let px=align==='center'?x-tot/2:align==='right'?x-tot:x;
+ ch.forEach((s,i)=>{const p=prog(t,t0+i*stagger,t0+i*stagger+dur);
+  if(p>0){c.save();c.beginPath();c.rect(px-10,base-asc-20,ws[i]+20,asc+desc+30);c.clip();
+   c.fillStyle=col;c.fillText(s,px,base+(1-ease(p))*(asc+desc+30));c.restore()}
+  px+=ws[i]});
+ c.restore();return tot;
+}
+function rr(c,x,y,w,h,r){c.beginPath();c.roundRect(x,y,w,h,r)}
+function disc(c,x,y,r,fill){c.fillStyle=fill;c.beginPath();c.arc(x,y,Math.max(r,0),0,TAU);c.fill()}
+// 手書きの波線。frac まで描く
+function wavy(c,x0,y0,x1,y1,amp,frac,seed=0){
+ const L=Math.hypot(x1-x0,y1-y0);if(L<1||frac<=0)return;const ux=(x1-x0)/L,uy=(y1-y0)/L,n=Math.max(8,Math.round(L/6));
+ c.beginPath();for(let i=0;i<=n*frac;i++){const s=i/n*L,o=amp*Math.sin(s/46*TAU+seed*2.1)*(.75+.25*Math.sin(s/90+seed));
+  const x=x0+ux*s-uy*o,y=y0+uy*s+ux*o;i?c.lineTo(x,y):c.moveTo(x,y)}c.stroke();
+}
+// なめらかな曲線（Catmull-Rom）を点列に
+function spline(P,seg=28){const o=[];for(let i=0;i<P.length-1;i++){const p0=P[Math.max(i-1,0)],p1=P[i],p2=P[i+1],p3=P[Math.min(i+2,P.length-1)];
+ for(let j=0;j<seg;j++){const u=j/seg,u2=u*u,u3=u2*u;o.push([.5*((2*p1[0])+(-p0[0]+p2[0])*u+(2*p0[0]-5*p1[0]+4*p2[0]-p3[0])*u2+(-p0[0]+3*p1[0]-3*p2[0]+p3[0])*u3),
+  .5*((2*p1[1])+(-p0[1]+p2[1])*u+(2*p0[1]-5*p1[1]+4*p2[1]-p3[1])*u2+(-p0[1]+3*p1[1]-3*p2[1]+p3[1])*u3)])}}
+ o.push(P[P.length-1]);return o}
+function partial(c,pts,a,b){const n=pts.length-1,i0=Math.floor(a*n),i1=Math.ceil(b*n);if(i1<=i0)return;c.beginPath();for(let i=i0;i<=i1;i++)i===i0?c.moveTo(pts[i][0],pts[i][1]):c.lineTo(pts[i][0],pts[i][1]);c.stroke()}
+
+/* ============================================================
+   場面1（0–5秒）：「正解」の的に矢が刺さる → 的がほどける → 粒が集まって黄色い点に
+   ============================================================ */
+const ARROWS=[{th:.5,ang:205,r:205},{th:1,ang:-38,r:190},{th:1.5,ang:62,r:215},{th:2,ang:138,r:198}];
+function arrowShape(c){ // 先端が原点、右向き（+x 方向）に飛ぶ形
+ c.strokeStyle=C.white;c.fillStyle=C.white;c.lineWidth=9;c.lineCap='round';
+ c.beginPath();c.moveTo(-290,0);c.lineTo(-30,0);c.stroke();
+ c.beginPath();c.moveTo(0,0);c.lineTo(-46,-22);c.lineTo(-46,22);c.closePath();c.fill();
+ c.lineWidth=7;[-290,-262].forEach(x=>{c.beginPath();c.moveTo(x,0);c.lineTo(x-26,-24);c.moveTo(x,0);c.lineTo(x-26,24);c.stroke()});
+}
+const NP=340;
+function s1(c,t){
+ c.fillStyle=C.navy;c.fillRect(0,0,W,H);
+ const gone=prog(t,2.0,2.18),ap=E.outBack(prog(t,0,.35));
+ if(gone<1&&ap>0){c.save();c.translate(CX,CY);const s=ap*(1+gone*.2);c.scale(s,s);c.globalAlpha=1-gone;
+  c.strokeStyle=C.white;c.lineWidth=5;c.beginPath();c.arc(0,0,250,0,TAU);c.stroke();c.lineWidth=8;c.beginPath();c.arc(0,0,168,0,TAU);c.stroke();
+  c.font='900 124px JP';c.textAlign='center';c.fillStyle=C.white;c.fillText('正解',0,midY(c,'正解'));c.restore()}
+ // 矢
+ ARROWS.forEach((a,i)=>{const p=prog(t,a.th-.4,a.th);if(p<=0)return;
+  const rad=a.ang*Math.PI/180,dist=lerp(1500,a.r,E.inCubic(p));let x=CX+Math.cos(rad)*dist,y=CY+Math.sin(rad)*dist,rot=rad+Math.PI,al=1;
+  if(t>a.th&&t<2)rot+=Math.sin((t-a.th)*42)*.07*Math.exp(-(t-a.th)*8);
+  if(t>=2){const d=t-2;x+=(hash(i+3)-.5)*260*d;y+=1500*d*d+40*d;rot+=(hash(i+9)-.5)*3.2*d;al=1-prog(t,2.7,3.1)}
+  if(al<=0)return;c.save();c.globalAlpha=al;c.translate(x,y);c.rotate(rot);arrowShape(c);c.restore()});
+ // 粒
+ if(t>=2.0){for(let i=0;i<NP;i++){
+  let x0,y0;if(i<230){const r=i%2?250:168,a=hash(i)*TAU;x0=Math.cos(a)*r;y0=Math.sin(a)*r}else{x0=(hash(i)-.5)*260;y0=(hash(i+500)-.5)*110}
+  const a0=Math.atan2(y0,x0)+(hash(i+70)-.5)*1.1,d=180+hash(i+140)*820,q=E.outExpo(prog(t,2.0,3.3));
+  let x=x0+Math.cos(a0)*d*q+Math.sin(t*.9+i)*10,y=y0+Math.sin(a0)*d*q*.62+Math.cos(t*.7+i*1.3)*10;
+  const g=E.inOutCubic(prog(t,4.0+hash(i+210)*.2,4.55+hash(i+210)*.2));if(g>=1)continue;
+  const r=Math.hypot(x,y)*(1-g),ang=Math.atan2(y,x)+g*2.4;
+  const sz=(3+hash(i+33)*6)*(1-g*.5);
+  c.globalAlpha=.55+hash(i+61)*.45;disc(c,CX+Math.cos(ang)*r,CY+Math.sin(ang)*r,sz,mix(i%5?C.white:C.sub,C.acc,g))}
+  c.globalAlpha=1}
+ // 文字
+ if(t>=2.5&&t<4.05){c.save();c.globalAlpha=1-prog(t,3.75,4.0);c.translate(0,-40*E.inCubic(prog(t,3.75,4.0)));
+  c.font='900 112px JP';masked(c,'決まった答えは、ありません',CX,CY+midY(c,'決'),'900 112px JP',2.5,t,{stagger:.045});c.restore()}
+}
+
+/* ============================================================
+   場面2（5–10.75秒）：紙に3行 → 吹き出しにまとまって送られる
+   ============================================================ */
+const PAPER={cx:CX,cy:CY+30,w:1040,h:680,rot:-1.5*Math.PI/180};
+const ROWS=[{y:235,label:'目的',n:'1'},{y:385,label:'いまの状況',n:'2'},{y:535,label:'AIに最初に頼むこと',n:'3'}];
+let ROWW=null;
+function rowWidths(c){if(!ROWW){c.save();c.font='600 62px KL';ROWW=ROWS.map(r=>c.measureText(r.label).width);c.restore()}return ROWW}
+const paperPt=(x,y)=>{const lx=x-PAPER.w/2,ly=y-PAPER.h/2,cs=Math.cos(PAPER.rot),sn=Math.sin(PAPER.rot);return[PAPER.cx+lx*cs-ly*sn,PAPER.cy+lx*sn+ly*cs]};
+const BUB={w:560,h:260,lines:[[-200,-62,200],[-200,0,110],[-200,62,160]]};
+function bubbleX(t){ // 吹き出しの位置と伸び縮み
+ const an=E.inOutCubic(prog(t,9.75,10.0)),go=E.inExpo(prog(t,10.0,10.35));
+ return{x:CX-55*an+2400*go,y:CY,sx:(1-.12*an)*(1+.6*go),sy:(1-.12*an)*(1-.3*go)}}
+function s2(c,t){
+ c.fillStyle=C.blue;c.fillRect(0,0,W,H);
+ const ww=rowWidths(c);
+ const up=E.outBack(prog(t,5.0,5.55)),dn=E.inCubic(prog(t,9.0,9.5));
+ if(dn<1){c.save();c.translate(PAPER.cx,PAPER.cy+(1-up)*950+dn*1300);c.rotate(PAPER.rot-dn*.25);
+  c.fillStyle='rgba(6,30,56,.22)';rr(c,-PAPER.w/2+16,-PAPER.h/2+22,PAPER.w,PAPER.h,10);c.fill();
+  c.fillStyle=C.paper;rr(c,-PAPER.w/2,-PAPER.h/2,PAPER.w,PAPER.h,10);c.fill();
+  c.translate(-PAPER.w/2,-PAPER.h/2);
+  txt(c,'AIにお願いしたいこと',70,98,{font:'600 46px KL',fill:C.ink,alpha:prog(t,5.3,5.55)});
+  c.font='600 46px KL';const tw=c.measureText('AIにお願いしたいこと').width;
+  c.strokeStyle=C.ink;c.lineWidth=4;c.lineCap='round';const ul=E.outCubic(prog(t,5.4,5.75));if(ul>0){c.beginPath();c.moveTo(70,120);c.lineTo(70+tw*ul,120);c.stroke()}
+  ROWS.forEach((r,i)=>{const r0=5.5+i;
+   const pop=E.outBack(prog(t,r0,r0+.22));
+   if(pop>0){c.save();c.translate(100,r.y-22);c.scale(pop,pop);c.strokeStyle=C.blue;c.lineWidth=5;c.beginPath();c.arc(0,0,30,0,TAU);c.stroke();
+    c.font='700 36px JP';c.textAlign='center';c.fillStyle=C.blue;c.fillText(r.n,0,midY(c,r.n));c.restore()}
+   const wr=E.outCubic(prog(t,r0+.1,r0+.5));
+   if(wr>0){c.save();c.beginPath();c.rect(150,r.y-80,(ww[i]+20)*wr,110);c.clip();txt(c,r.label,160,r.y,{font:'600 62px KL',fill:C.ink});c.restore();
+    if(wr<1)disc(c,160+(ww[i]+10)*wr,r.y-14,7,C.ink)}
+   if(t<9.0){const wl=prog(t,r0+.45,r0+.95);c.strokeStyle=C.ink;c.lineWidth=6;c.lineCap='round';wavy(c,160+ww[i]+44,r.y-18,960,r.y-18,9,wl,i);
+    if(wl>0&&wl<1)disc(c,160+ww[i]+44+(960-160-ww[i]-44)*wl,r.y-18,7,C.ink)}
+  });
+  const kp=E.outBack(prog(t,8.5,8.85));
+  if(kp>0){c.save();c.translate(968,632);c.rotate(-.05);c.globalAlpha=prog(t,8.5,8.7);c.translate(0,(1-kp)*24);
+   txt(c,'仮の答えで大丈夫',0,0,{font:'600 46px KL',fill:C.blue,align:'right'});
+   c.font='600 46px KL';const kw=c.measureText('仮の答えで大丈夫').width;c.strokeStyle=C.blue;c.lineWidth=4;wavy(c,-kw,16,0,16,3,prog(t,8.7,8.95),5);c.restore()}
+  c.restore()}
+ // 3本の線が浮いて吹き出しへ
+ if(t>=9.0){const B=bubbleX(t),bs=E.outBack(prog(t,9.2,9.6));
+  // 送るときの残像
+  const go=prog(t,10.0,10.35);
+  c.save();c.translate(B.x,B.y);c.scale(B.sx,B.sy);
+  if(bs>0){c.save();c.scale(bs,bs);if(go>0)for(let k=5;k>=1;k--){c.globalAlpha=.1;c.fillStyle=C.white;rr(c,-BUB.w/2-k*90*go,-BUB.h/2,BUB.w,BUB.h,56);c.fill()}
+   c.globalAlpha=1;c.fillStyle=C.white;rr(c,-BUB.w/2,-BUB.h/2,BUB.w,BUB.h,56);c.fill();
+   c.beginPath();c.moveTo(BUB.w/2-110,BUB.h/2-6);c.lineTo(BUB.w/2-40,BUB.h/2+62);c.lineTo(BUB.w/2-50,BUB.h/2-30);c.closePath();c.fill();c.restore()}
+  c.restore();
+  c.strokeStyle=C.ink;c.lineWidth=8;c.lineCap='round';
+  ROWS.forEach((r,i)=>{const q=E.inOutCubic(prog(t,9.0+i*.08,9.58+i*.08));
+   const A=paperPt(160+ww[i]+44,r.y-18),Bp=paperPt(960,r.y-18),L=BUB.lines[i];
+   const ex0=B.x+L[0]*B.sx,ex1=B.x+L[2]*B.sx,ey=B.y+L[1]*B.sy,lift=-90*Math.sin(q*Math.PI);
+   wavy(c,lerp(A[0],ex0,q),lerp(A[1],ey,q)+lift,lerp(Bp[0],ex1,q),lerp(Bp[1],ey,q)+lift,9*(1-q),1,i)})}
+}
+
+/* ============================================================
+   場面3・4（10–22秒）：チャット｜アーティファクト。輪が組み上がり、一言ごとに変わる
+   ============================================================ */
+const CH={x:120,y:110,w:640,h:700},FR={x:860,y:110,w:840,h:700},FC=[1280,502],WR=235;
+const PA=['#0A7CC4','#DDF0FB','#7CC4EC','#0A7CC4','#DDF0FB','#7CC4EC','#0A7CC4','#DDF0FB'];
+const PB=['#12A594','#DFF6F2','#86DACD','#12A594','#DFF6F2','#86DACD','#12A594','#DFF6F2'];
+const PC=['#FFFFFF','#DCEFFA','#FFFFFF','#DCEFFA','#FFFFFF','#DCEFFA','#FFFFFF','#DCEFFA'];
+const PD=['#0B2A4A','#0A7CC4','#0B2A4A','#0A7CC4','#0B2A4A','#0A7CC4','#0B2A4A','#0A7CC4'];
+const PALK=[[0,PA],[18,PB],[20,PC],[20.5,PA],[21,PB],[21.25,PD],[21.5,PB],[21.75,PA]];
+function wheelState(t){
+ let pi=0;for(let i=1;i<PALK.length;i++)if(t>=PALK[i][0])pi=i;
+ const pq=pi?prog(t,PALK[pi][0],PALK[pi][0]+.22):1,prev=PALK[Math.max(pi-1,0)][1],cur=PALK[pi][1];
+ let rot=9.5*E.outCubic(prog(t,15,16.55));if(t>16.55)rot+=.07*Math.sin((t-16.55)*20)*Math.exp(-(t-16.55)*7);
+ TRY.slice(1).forEach((tt,i)=>{rot+=(i<3?2.4:i<5?1.4:.8)*E.outCubic(prog(t,tt,tt+(i<3?.45:.22)))});
+ let pop=0;FIX.forEach(tt=>{const p=prog(t,tt,tt+.28);if(p>0&&p<1)pop=Math.max(pop,Math.sin(p*Math.PI))});
+ const w5=clamp(tr(t,[[0,1],[21.25,0],[21.75,1]],.2)),w67=clamp(tr(t,[[0,0],[19,1],[21.25,0]],.3));
+ return{prev,cur,pq,rot,pop,w:[1,1,1,1,1,w5,w67,w67],
+  ls:tr(t,[[0,26],[17,46],[20,34],[21,50],[21.75,40]],.3,E.outBack),
+  rim:tr(t,[[0,14],[20,5],[20.5,14],[21.5,22],[21.75,14]],.2),
+  studs:tr(t,[[0,1],[20,0],[20.5,1]],.2)}}
+function wheel(c,cx,cy,R,t){
+ const s=wheelState(Math.min(t,22)),build=t<13.6;
+ const rimF=build?E.inOutCubic(prog(t,12.0,12.5)):1,hubS=build?E.outBack(prog(t,13,13.25)):1,labA=build?prog(t,13,13.25):1,ptr=build?E.outBounce(prog(t,13.25,13.65)):1,ptrA=build?prog(t,13.25,13.35):1;
+ const tot=s.w.reduce((a,b)=>a+b,0);
+ c.save();c.translate(cx,cy);const sc=(R/WR)*(1+.06*s.pop);c.scale(sc,sc);
+ c.save();c.rotate(s.rot-Math.PI/2);
+ let a0=0;
+ s.w.forEach((w,k)=>{const a1=a0+w/tot*TAU;if(w>.001){
+  const g=build?E.outCubic(prog(t,12.5+k/12,12.78+k/12)):1;
+  if(g>0){c.fillStyle=mix(s.prev[k],s.cur[k],s.pq);c.beginPath();c.moveTo(0,0);c.arc(0,0,WR*g,a0,a1);c.closePath();c.fill()}
+  if(labA>0&&w>.5){const col=lum(s.pq>.5?s.cur[k]:s.prev[k])<.45?C.white:C.ink;c.save();c.rotate((a0+a1)/2);c.globalAlpha=labA*clamp(w*2-1);
+   c.font=`700 ${s.ls.toFixed(1)}px JP`;c.textAlign='center';c.fillStyle=col;c.fillText(LABELS[k],WR*.6,midY(c,LABELS[k]));c.restore()}}
+  a0=a1});
+ // 仕切り（3本の線がそのまま骨組みになる）
+ if(t>=12.2){c.strokeStyle=C.ink;c.lineWidth=6;c.lineCap='round';a0=0;s.w.forEach(w=>{if(w>.02){c.globalAlpha=clamp(w*3);c.beginPath();c.moveTo(0,0);c.lineTo(Math.cos(a0)*WR,Math.sin(a0)*WR);c.stroke()}a0+=w/tot*TAU});c.globalAlpha=1}
+ if(rimF>0){c.strokeStyle=C.ink;c.lineWidth=s.rim;c.lineCap='butt';c.beginPath();c.arc(0,0,WR,0,TAU*rimF);c.stroke();
+  if(s.studs>.01&&labA>0)for(let k=0;k<12;k++){c.globalAlpha=s.studs*labA;disc(c,Math.cos(k/12*TAU+.26)*WR,Math.sin(k/12*TAU+.26)*WR,4,C.white)}c.globalAlpha=1}
+ c.restore();
+ if(hubS>0){disc(c,0,0,38*hubS,C.ink);disc(c,0,0,30*hubS,C.white)}
+ if(ptrA>0){c.globalAlpha=ptrA;c.fillStyle=C.ink;const py=-WR-64+ptr*46;c.beginPath();c.moveTo(-24,py-22);c.lineTo(24,py-22);c.lineTo(0,py+30);c.closePath();c.fill();c.globalAlpha=1}
+ c.restore();
+}
+const MSG=[{ta:9.9,h:130,type:'memo'},{ta:13.25,h:64,type:'ai',text:'作りました'},
+ {ta:16.5,h:64,type:'user',text:'文字を大きくして',land:17},{ta:17.5,h:64,type:'user',text:'色を変えて',land:18},
+ {ta:18.5,h:64,type:'user',text:'項目を増やして',land:19},{ta:19.5,h:64,type:'user',text:'もっとシンプルに',land:20},
+ {ta:20.42,h:46,type:'bar',w:230},{ta:20.92,h:46,type:'bar',w:170},{ta:21.18,h:46,type:'bar',w:260},{ta:21.43,h:46,type:'bar',w:150},{ta:21.68,h:46,type:'bar',w:210}];
+const MEMO={cx:580,cy:290,w:280,h:130,lines:[[-95,-34,95],[-95,0,40],[-95,34,65]]};
+function chat(c,t){
+ c.fillStyle='rgba(255,255,255,.13)';rr(c,CH.x,CH.y,CH.w,CH.h,28);c.fill();c.strokeStyle='rgba(255,255,255,.75)';c.lineWidth=3;rr(c,CH.x,CH.y,CH.w,CH.h,28);c.stroke();
+ txt(c,'チャット',CH.x+40,CH.y+58,{font:'700 30px JP'});c.strokeStyle='rgba(255,255,255,.4)';c.lineWidth=2;c.beginPath();c.moveTo(CH.x+30,CH.y+84);c.lineTo(CH.x+CH.w-30,CH.y+84);c.stroke();
+ c.save();c.beginPath();c.rect(CH.x,CH.y+92,CH.w,CH.h-104);c.clip();
+ let cur=225;const ys=MSG.map(m=>{const a=E.outCubic(prog(t,m.ta,m.ta+.2));const y=cur;cur+=(m.h+18)*a;return[y,a]});
+ let extra=0;const ty=prog(t,11.0,11.15)*(1-prog(t,13.1,13.25));
+ c.translate(0,-Math.max(0,cur-788));
+ MSG.forEach((m,i)=>{const[y,a]=ys[i];if(a<=0)return;c.save();
+  if(m.type==='memo'){c.translate(MEMO.cx,y+65);c.fillStyle=C.white;rr(c,-MEMO.w/2,-65,MEMO.w,130,30);c.fill();
+   c.strokeStyle=C.ink;c.lineWidth=6;c.lineCap='round';c.globalAlpha=t<11?1:lerp(1,.22,prog(t,11,11.3));MEMO.lines.forEach(L=>{c.beginPath();c.moveTo(L[0],L[1]);c.lineTo(L[2],L[1]);c.stroke()})}
+  else if(m.type==='ai'){c.translate(CH.x+40,y+m.h);c.scale(a,a);c.font='700 30px JP';const w=c.measureText(m.text).width+56;
+   c.fillStyle='rgba(255,255,255,.22)';rr(c,0,-m.h,w,m.h,26);c.fill();txt(c,m.text,28,-21,{font:'700 30px JP'})}
+  else if(m.type==='user'){c.font='700 30px JP';const w=c.measureText(m.text).width+56,sent=t>=m.land,pp=sent?1+.08*Math.sin(prog(t,m.land,m.land+.25)*Math.PI):1;
+   c.translate(CH.x+CH.w-40,y+m.h);c.scale(a*pp,a*pp);c.fillStyle=sent?C.white:'rgba(255,255,255,.72)';rr(c,-w,-m.h,w,m.h,26);c.fill();
+   const ch=[...m.text],n=Math.ceil(ch.length*prog(t,m.ta+.06,m.land-.1));txt(c,ch.slice(0,n).join(''),-w+28,-21,{font:'700 30px JP',fill:C.ink});
+   if(!sent){const cw=c.measureText(ch.slice(0,n).join('')).width;c.fillStyle=C.blue;c.fillRect(-w+30+cw,-50,4,36)}}
+  else{c.translate(CH.x+CH.w-40,y+m.h);c.scale(a,a);c.fillStyle=C.white;rr(c,-m.w,-m.h,m.w,m.h,22);c.fill();c.fillStyle=C.sub;rr(c,-m.w+24,-m.h/2-5,m.w-48,10,5);c.fill()}
+  c.restore()});
+ // AIが考えている印
+ if(ty>0){const y=225+148;c.globalAlpha=ty;c.fillStyle='rgba(255,255,255,.22)';rr(c,CH.x+40,y,130,64,26);c.fill();
+  for(let k=0;k<3;k++)disc(c,CH.x+75+k*30,y+32-Math.max(0,Math.sin((t*TAU*2)-k*.9))*10,7,C.white);c.globalAlpha=1}
+ c.restore();
+}
+function words(c,t){
+ const a=prog(t,15.0,15.1)*(1-prog(t,22.0,22.3));if(a<=0)return;
+ let lt=-1,lf=-1;TRY.forEach(x=>{if(t>=x)lt=x});FIX.forEach(x=>{if(t>=x)lf=x});const tryOn=lt>lf;
+ c.save();c.globalAlpha=a;
+ [['ためす',140,tryOn,lt],['直す',600,!tryOn,lf]].forEach(([w,x,on,te],i)=>{
+  c.save();c.font='900 104px JP';const ww=c.measureText(w).width,k=on?1+.13*(1-E.outCubic(prog(t,te,te+.3))):1;
+  c.translate(x+ww/2,945);c.scale(k,k);c.globalAlpha*=on?1:.28;
+  if(t<15.7)masked(c,w,0,36,'900 104px JP',15.0+i*.12,t,{stagger:.05});else txt(c,w,0,36,{font:'900 104px JP',align:'center'});
+  if(on){c.fillStyle=C.acc;const u=E.outExpo(prog(t,te,te+.25));c.fillStyle=C.white;c.fillRect(-ww/2,62,ww*u,8)}
+  c.restore()});
+ c.globalAlpha=a*.7*prog(t,15.3,15.6);c.strokeStyle=C.white;c.fillStyle=C.white;c.lineWidth=6;c.lineCap='round';
+ [[478,925,1],[478,965,-1]].forEach(([x,y,d])=>{const x0=d>0?x:x+84,x1=d>0?x+84:x;c.beginPath();c.moveTo(x0,y);c.lineTo(x1-d*14,y);c.stroke();
+  c.beginPath();c.moveTo(x1,y);c.lineTo(x1-d*22,y-13);c.lineTo(x1-d*22,y+13);c.closePath();c.fill()});
+ c.restore();
+}
+function work(c,t,pa=1){ // pa: パネルの濃さ（引きの場面で薄くする）
+ if(pa>0){c.save();c.globalAlpha=pa;chat(c,t);
+  c.fillStyle='rgba(6,30,56,.2)';rr(c,FR.x+14,FR.y+18,FR.w,FR.h,28);c.fill();
+  c.fillStyle=C.paper;rr(c,FR.x,FR.y,FR.w,FR.h,28);c.fill();
+  txt(c,'アーティファクト',FR.x+40,FR.y+58,{font:'700 30px JP',fill:C.ink});c.strokeStyle='rgba(18,35,58,.18)';c.lineWidth=2;c.beginPath();c.moveTo(FR.x+30,FR.y+84);c.lineTo(FR.x+FR.w-30,FR.y+84);c.stroke();
+  // まだ何もない枠
+  const ph=1-prog(t,11.9,12.3);if(ph>0){c.globalAlpha=pa*ph*.5;c.strokeStyle=C.foot;c.lineWidth=3;c.setLineDash([10,12]);c.beginPath();c.arc(FC[0],FC[1],WR,0,TAU);c.stroke();c.setLineDash([])}
+  c.restore()}
+ // 3本の線が飛んできて、輪の骨組みになる
+ if(t>=11.0&&t<12.2){const spin=(1-E.outCubic(prog(t,11.0,12.2)))*5;c.strokeStyle=C.ink;c.lineWidth=6;c.lineCap='round';
+  MEMO.lines.forEach((L,i)=>{const q=E.inOutCubic(prog(t,11.0+i*.08,11.5+i*.08)),th=-Math.PI/2+i*Math.PI/3+spin,lift=-140*Math.sin(q*Math.PI);
+   const ax=lerp(MEMO.cx+L[0],FC[0]-Math.cos(th)*WR,q),ay=lerp(225+65+L[1],FC[1]-Math.sin(th)*WR,q)+lift,bx=lerp(MEMO.cx+L[2],FC[0]+Math.cos(th)*WR,q),by=lerp(225+65+L[1],FC[1]+Math.sin(th)*WR,q)+lift;
+   c.beginPath();c.moveTo(ax,ay);c.lineTo(bx,by);c.stroke()})}
+ if(t>=12.0)wheel(c,FC[0],FC[1],WR,t);
+ if(pa>0){c.save();c.globalAlpha=pa;
+  if(t>=13.5&&t<14.95){c.globalAlpha=pa*(1-prog(t,14.6,14.9));masked(c,'頼んだものが、その場で形になる',CX,985,'900 76px JP',13.5,t,{stagger:.04})}
+  words(c,t);c.restore()}
+}
+
+/* ============================================================
+   場面5（22–27秒）：引くと、点の通った跡が1本の曲がった線に見える
+   ============================================================ */
+const WM=[1480,500],HEAD=[1600,372];
+const NODES=[[250,770],[470,600],[640,790],[860,630],[990,360],[1200,520],[1340,250],HEAD];
+const PATH=spline(NODES);
+function s5(c,t){
+ c.fillStyle=C.blue;c.fillRect(0,0,W,H);
+ const z=E.inOutCubic(prog(t,22.0,22.7)),s=lerp(1,.26,z);
+ const sh=E.inCubic(prog(t,26.0,26.38));
+ // 作業の場面を縮めていく（輪だけ残る）
+ c.save();c.translate(lerp(FC[0],lerp(WM[0],HEAD[0],sh),z),lerp(FC[1],lerp(WM[1],HEAD[1],sh),z));c.scale(s*(1-sh),s*(1-sh));c.translate(-FC[0],-FC[1]);
+ if(sh<1)work(c,22,1-prog(t,22.15,22.55));c.restore();
+ // 線
+ const dr=E.inOutCubic(prog(t,22.4,24.0)),re=E.inCubic(prog(t,25.75,26.38));
+ if(dr>0&&re<1){c.strokeStyle=C.white;c.lineWidth=9;c.lineCap='round';c.lineJoin='round';partial(c,PATH,re,dr)}
+ // これまでのゴールの跡
+ NODES.slice(1,-1).forEach((n,i)=>{const f=(i+1)/(NODES.length-1),p=E.outBack(prog(dr,f-.01,f+.05))*(1-prog(re,f-.05,f));
+  if(p>0){c.save();c.translate(n[0],n[1]);c.scale(p,p);disc(c,0,0,22,C.blue);c.strokeStyle=C.acc;c.lineWidth=6;c.beginPath();c.arc(0,0,19,0,TAU);c.stroke();c.restore()}});
+ // 出発点の紙
+ const pp=E.outBack(prog(t,22.3,22.6))*(1-E.inCubic(prog(t,25.75,26.0)));
+ if(pp>0){c.save();c.translate(NODES[0][0]-8,NODES[0][1]+8);c.scale(pp,pp);c.rotate(-.08);c.fillStyle=C.paper;rr(c,-52,-66,104,132,8);c.fill();
+  c.strokeStyle=C.ink;c.lineWidth=6;c.lineCap='round';[[-30,-28,30],[-30,2,6],[-30,32,18]].forEach(L=>{c.beginPath();c.moveTo(L[0],L[1]);c.lineTo(L[2],L[1]);c.stroke()});c.restore()}
+ if(t>=24.0&&t<25.95){c.save();c.globalAlpha=1-prog(t,25.6,25.9);masked(c,'ゴールは、動いていい',1830,975,'900 124px JP',24.0,t,{stagger:.05,align:'right'});c.restore()}
+}
+
+/* ============================================================
+   場面6（27–30秒）：タイトル。最後の2秒は動かさない
+   ============================================================ */
+function s7(c,t){
+ c.fillStyle=C.white;c.fillRect(0,0,W,H);
+ masked(c,'AIチャット×アーティファクト',170,430,'900 100px JP',27.0,t,{stagger:.035,col:C.ink,align:'left'});
+ const u=E.outExpo(prog(t,27.3,27.75));if(u>0){c.fillStyle=C.blue;c.fillRect(170,476,560*u,10)}
+ masked(c,'答えがないから、',170,610,'700 62px JP',27.45,t,{stagger:.03,col:C.ink,align:'left'});
+ masked(c,'ゴールを見直しながら進める',170,702,'700 62px JP',27.6,t,{stagger:.03,col:C.ink,align:'left'});
+ txt(c,'サロン向けAI勉強会　第1回＋第2回（再開催）',170,912,{font:'400 34px JP',fill:C.foot,alpha:prog(t,27.9,28.3)});
+}
+
+/* ============================================================
+   黄色い点（ゴール）。場面をまたいで1つだけ存在する
+   ============================================================ */
+const DK=[[4.6,4.6,CX,CY],[5.0,5.6,1560,190],[10.0,10.75,FC[0],FC[1]],[15.25,15.9,1790,180],[17.0,17.3,1812,640],[18.0,18.3,1600,950],[19.0,19.3,960,935],
+ [20.0,20.25,810,62],[20.5,20.7,1300,56],[21.0,21.18,1822,330],[21.25,21.43,1762,900],[21.5,21.68,1010,962],[21.75,21.93,1560,52],[22.0,22.65,HEAD[0],HEAD[1]],[26.5,27.2,1650,650],[27.9,28.4,1676,628]];
+function dotPos(t){let x=DK[0][2],y=DK[0][3];for(let i=1;i<DK.length;i++){const[a,b,nx,ny]=DK[i];if(t<a)break;
+ const q=(i===DK.length-1?E.outElastic:E.inOutCubic)(prog(t,a,b)),dx=nx-x,dy=ny-y,d=Math.hypot(dx,dy)||1,arc=Math.sin(clamp(q)*Math.PI)*.16*d*(i%2?1:-1);
+ x=x+dx*q-dy/d*arc;y=y+dy*q+dx/d*arc}return[x,y]}
+function dotLayer(c,t){
+ if(t<4.6)return;
+ // 場面4：これまでいた場所の輪と、たどった跡
+ const ta=prog(t,15.9,16.2)*(1-prog(t,22.0,22.4));
+ if(ta>0){const pts=[];for(let i=2;i<=12;i++){if(t>=DK[i+1]?.[0])pts.push([DK[i][2],DK[i][3]])}
+  c.save();c.globalAlpha=ta*.5;c.strokeStyle=C.white;c.lineWidth=4;c.setLineDash([4,14]);c.lineCap='round';
+  if(pts.length){c.beginPath();pts.forEach((p,i)=>i?c.lineTo(p[0],p[1]):c.moveTo(p[0],p[1]));const[nx,ny]=dotPos(t);c.lineTo(nx,ny);c.stroke()}
+  c.setLineDash([]);c.globalAlpha=ta*.75;c.strokeStyle=C.acc;c.lineWidth=5;pts.slice(1).forEach(p=>{c.beginPath();c.arc(p[0],p[1],20,0,TAU);c.stroke()});c.restore()}
+ const[x,y]=dotPos(t);
+ let r=26*E.outBack(prog(t,4.6,4.85));
+ r=lerp(r,22,prog(t,22.0,22.6));r*=1-.3*Math.sin(prog(t,26.25,26.5)*Math.PI/2)*(1-prog(t,26.5,26.6));r=lerp(r,44,E.outBack(prog(t,26.5,27.1)));
+ // 残像（オニオンスキン）
+ for(let k=5;k>=1;k--){const[ox,oy]=dotPos(t-k*.028);if(Math.hypot(ox-x,oy-y)>2){c.globalAlpha=.16;disc(c,ox,oy,r*(1-k*.08),C.acc)}}
+ c.globalAlpha=1;
+ // 最終画面の的の輪
+ const ring=E.outCubic(prog(t,27.6,28.2));if(ring>0){c.save();c.strokeStyle=C.sub;c.lineWidth=4;c.setLineDash([8,12]);c.globalAlpha=ring;[96,150].forEach((rr2,i)=>{c.beginPath();c.arc(1676,628,rr2*lerp(.7,1,ring),0,TAU);c.stroke()});c.restore()}
+ const pulse=t>5.6&&t<9?1+.06*Math.sin(t*TAU):1;
+ disc(c,x,y,r*pulse,C.acc);
+}
+
+/* ============================================================
+   全体の組み立て
+   ============================================================ */
+function compose(c,t){
+ if(t<4.75)s1(c,t);
+ else if(t<5.2){s1(c,t);const r=lerp(0,1350,E.inOutCubic(prog(t,4.75,5.2)));c.save();c.beginPath();c.arc(CX,CY,r,0,TAU);c.clip();s2(c,t);c.restore()}
+ else if(t<10.05)s2(c,t);
+ else if(t<10.75){const p=E.inOutExpo(prog(t,10.05,10.65));c.fillStyle=C.blue;c.fillRect(0,0,W,H);
+  c.save();c.translate(-W*p,0);s2(c,t);c.restore();c.save();c.translate(W*(1-p),0);work(c,t);c.restore();
+  const sl=Math.sin(p*Math.PI);if(sl>0){c.strokeStyle=C.white;c.lineCap='round';for(let k=0;k<16;k++){c.globalAlpha=sl*(.15+hash(k)*.3);c.lineWidth=2+hash(k+5)*5;const y=60+hash(k+11)*960,x=((hash(k+20)*W*1.4-p*W*1.6)%W+W)%W;c.beginPath();c.moveTo(x,y);c.lineTo(x+200+hash(k+3)*500,y);c.stroke()}c.globalAlpha=1}}
+ else if(t<22.0){c.fillStyle=C.blue;c.fillRect(0,0,W,H);work(c,t)}
+ else if(t<26.5)s5(c,t);
+ else if(t<27.0){s5(c,t);const[dx,dy]=dotPos(t),r=lerp(0,2300,E.inOutCubic(prog(t,26.5,27.0)));c.save();c.beginPath();c.arc(dx,dy,r,0,TAU);c.clip();s7(c,t);c.restore()}
+ else s7(c,t);
+ dotLayer(c,t);
+}
+
+/* ---------- 仕上げ：強拍で揺らす ---------- */
+function render(t){
+ const a=bufA.getContext('2d');a.save();compose(a,t);a.restore();
+ const imp=impact(t),sh=imp*10,dx=noise(t*40)*sh,dy=noise(t*40+50)*sh,z=1+imp*.015;
+ ctx.save();ctx.fillStyle=t>=27?'#fff':'#000';ctx.fillRect(0,0,W,H);ctx.translate(CX+dx,CY+dy);ctx.scale(z,z);ctx.drawImage(bufA,-CX,-CY);ctx.restore();
+}
+
+window.ready=(async()=>{await Promise.all(FONTS.map(f=>document.fonts.load(f,FONT_SAMPLE)));return true})();
+window.renderAt=t=>render(t);
+if(!location.search.includes('render')){
+ window.ready.then(()=>{
+  const audio=new Audio('audio.wav');audio.loop=true;let t0=performance.now();
+  const go=()=>{t0=performance.now();audio.currentTime=0;audio.play().catch(()=>{})};
+  cv.addEventListener('click',go);go();
+  const loop=()=>{requestAnimationFrame(loop);
+   const clock=!audio.paused&&audio.currentTime>0?audio.currentTime:(performance.now()-t0)/1000;
+   render(((clock%DUR)+DUR)%DUR)};
+  requestAnimationFrame(loop);
+ });
+}
+</script></body></html>
